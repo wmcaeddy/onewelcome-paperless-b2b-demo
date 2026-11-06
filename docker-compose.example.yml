@@ -1,5 +1,63 @@
-# Add this service to the docker-compose.yml that runs Paperless-ngx
+# Full example stack: Paperless-ngx + Postgres + Valkey + claims-hook
+# Secrets come from .env (see .env.example). Non-secret Paperless settings from docker-compose.env.
 services:
+  broker:
+    image: docker.io/valkey/valkey:8-alpine
+    container_name: paperless-broker
+    restart: unless-stopped
+    volumes:
+      - valkeydata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  db:
+    image: docker.io/library/postgres:16-alpine
+    container_name: paperless-db
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: paperless
+      POSTGRES_USER: paperless
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperless -d paperless"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  webserver:
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.3.1      # pin for reproducibility
+    container_name: paperless-webserver
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+      broker: { condition: service_healthy }
+    ports:
+      - "127.0.0.1:8000:8000"          # publish via reverse proxy / tunnel only
+    volumes:
+      - data:/usr/src/paperless/data
+      - media:/usr/src/paperless/media
+      - ./export:/usr/src/paperless/export
+      - ./consume:/usr/src/paperless/consume   # e.g. consume/<org>/ triggers the org workflow
+    env_file:
+      - docker-compose.env
+    environment:
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY}
+      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD}
+      PAPERLESS_ADMIN_USER: ${PAPERLESS_ADMIN_USER}
+      PAPERLESS_ADMIN_PASSWORD: ${PAPERLESS_ADMIN_PASSWORD}
+      # OIDC provider kept here (not in docker-compose.env) so the secret is interpolated from .env
+      PAPERLESS_SOCIALACCOUNT_PROVIDERS: >-
+        {"openid_connect":{"SCOPE":["openid","profile","email"],"OAUTH_PKCE_ENABLED":true,
+        "APPS":[{"provider_id":"onewelcome","name":"OneWelcome",
+        "client_id":"${PAPERLESS_CLIENT_ID}","secret":"${PAPERLESS_OIDC_CLIENT_SECRET}",
+        "settings":{"server_url":"https://<tenant>.gw.<region-domain>/oauth/.well-known/openid-configuration",
+        "token_auth_method":"client_secret_basic"}}]}}
+
   claims-hook:
     image: python:3.12-alpine
     container_name: paperless-claims-hook
@@ -10,20 +68,26 @@ services:
       - ./claims-hook-data:/data
     command: ["python", "-u", "app.py"]
     ports:
-      - "127.0.0.1:8080:8080"          # expose publicly only via a reverse proxy / tunnel (HTTPS)
+      - "127.0.0.1:8080:8080"          # never bind a public IP; expose via HTTPS tunnel/proxy
     environment:
-      HOOK_SECRET: "${HOOK_SECRET}"
+      HOOK_SECRET: ${HOOK_SECRET}
       OIP_TOKEN_URL: "https://<tenant>.gw.<region-domain>/oauth/token"
       DM_BASE: "https://<tenant>.gw.<region-domain>/dm/correlation/api/v1"
-      DM_CLIENT_ID: "${DM_CLIENT_ID}"
-      DM_CLIENT_SECRET: "${DM_CLIENT_SECRET}"
-      PAPERLESS_CLIENT_ID: "${PAPERLESS_CLIENT_ID}"   # hook only acts for this OIDC client
+      DM_CLIENT_ID: ${DM_CLIENT_ID}
+      DM_CLIENT_SECRET: ${DM_CLIENT_SECRET}
+      PAPERLESS_CLIENT_ID: ${PAPERLESS_CLIENT_ID}   # hook only acts for this OIDC client
       EXCLUDE_ORGS: "root"
       DEBUG: "0"
-      PAPERLESS_TOKEN: "${PAPERLESS_TOKEN}"
+      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
       PAPERLESS_API: "http://paperless-webserver:8000"
-      PAPERLESS_HOST: "paperless.<your-domain>"      # must be in Paperless ALLOWED_HOSTS
-      TEMPLATE_GROUP: "Despair"                      # existing group whose permissions are copied
+      PAPERLESS_HOST: "paperless.<your-domain>"      # must match PAPERLESS_URL host
+      TEMPLATE_GROUP: "Despair"                      # existing org group whose permissions are copied
       AUTO_PROVISION: "1"
       AUTOSHARE: "1"
       AUTOSHARE_INTERVAL: "10"
+
+volumes:
+  data:
+  media:
+  pgdata:
+  valkeydata:

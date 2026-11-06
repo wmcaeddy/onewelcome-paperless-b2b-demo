@@ -1,3 +1,6 @@
 .env
+docker-compose.env
 claims-hook-data/
 __pycache__/
+export/
+consume/
