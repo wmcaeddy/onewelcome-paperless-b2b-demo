@@ -1,0 +1,29 @@
+# Add this service to the docker-compose.yml that runs Paperless-ngx
+services:
+  claims-hook:
+    image: python:3.12-alpine
+    container_name: paperless-claims-hook
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./claims-hook:/app:ro
+      - ./claims-hook-data:/data
+    command: ["python", "-u", "app.py"]
+    ports:
+      - "127.0.0.1:8080:8080"          # expose publicly only via a reverse proxy / tunnel (HTTPS)
+    environment:
+      HOOK_SECRET: "${HOOK_SECRET}"
+      OIP_TOKEN_URL: "https://<tenant>.gw.<region-domain>/oauth/token"
+      DM_BASE: "https://<tenant>.gw.<region-domain>/dm/correlation/api/v1"
+      DM_CLIENT_ID: "${DM_CLIENT_ID}"
+      DM_CLIENT_SECRET: "${DM_CLIENT_SECRET}"
+      PAPERLESS_CLIENT_ID: "${PAPERLESS_CLIENT_ID}"   # hook only acts for this OIDC client
+      EXCLUDE_ORGS: "root"
+      DEBUG: "0"
+      PAPERLESS_TOKEN: "${PAPERLESS_TOKEN}"
+      PAPERLESS_API: "http://paperless-webserver:8000"
+      PAPERLESS_HOST: "paperless.<your-domain>"      # must be in Paperless ALLOWED_HOSTS
+      TEMPLATE_GROUP: "Despair"                      # existing group whose permissions are copied
+      AUTO_PROVISION: "1"
+      AUTOSHARE: "1"
+      AUTOSHARE_INTERVAL: "10"
