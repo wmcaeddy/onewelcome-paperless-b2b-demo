@@ -229,6 +229,7 @@ Folder: `/opt/paperless/` (same compose project as Paperless).
 ```
 
 ### 5.2 `docker-compose.yml` (service excerpt)
+Full stack: see [`docker-compose.example.yml`](docker-compose.example.yml). The claims-hook service:
 ```yaml
   claims-hook:
     image: python:3.12-alpine
@@ -240,28 +241,33 @@ Folder: `/opt/paperless/` (same compose project as Paperless).
       - ./claims-hook-data:/data
     command: ["python", "-u", "app.py"]
     ports:
-      - "127.0.0.1:8080:8080"          # only reachable via local Cloudflare tunnel
+      - "127.0.0.1:8080:8080"          # never bind a public IP; expose via HTTPS tunnel/proxy
     environment:
-      HOOK_SECRET: "${HOOK_SECRET}"
-      DM_CLIENT_ID: "${DM_CLIENT_ID}"
-      DM_CLIENT_SECRET: "${DM_CLIENT_SECRET}"
-      PAPERLESS_CLIENT_ID: "<PAPERLESS_CLIENT_ID>"   # only act for this OIDC client
+      HOOK_SECRET: ${HOOK_SECRET}
+      OIP_TOKEN_URL: "https://<tenant>.gw.<oip-region-domain>/oauth/token"            # required
+      DM_BASE: "https://<tenant>.gw.<oip-region-domain>/dm/correlation/api/v1"        # required
+      DM_CLIENT_ID: ${DM_CLIENT_ID}
+      DM_CLIENT_SECRET: ${DM_CLIENT_SECRET}
+      PAPERLESS_CLIENT_ID: ${PAPERLESS_CLIENT_ID}    # only act for this OIDC client
       EXCLUDE_ORGS: "root"
-      DEBUG: "1"                                     # set "0" when stable
+      DEBUG: "0"                                     # "1" while testing (logs DM responses)
       # provisioning + autoshare
-      PAPERLESS_TOKEN: "${PAPERLESS_TOKEN}"
+      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
       PAPERLESS_API: "http://paperless-webserver:8000"
-      PAPERLESS_HOST: "paperless.<your-domain>"
+      PAPERLESS_HOST: "paperless.<your-domain>"      # must match PAPERLESS_URL host
       TEMPLATE_GROUP: "Despair"
       AUTO_PROVISION: "1"
+      AUTOSHARE: "1"
       AUTOSHARE_INTERVAL: "10"
 ```
 
 ### 5.3 `.env` (masked)
+See [`.env.example`](.env.example) for the full list. Hook-related values:
 ```env
 HOOK_SECRET=<openssl rand -hex 24>
 DM_CLIENT_ID=<from §3>
 DM_CLIENT_SECRET=<from §3>
+PAPERLESS_CLIENT_ID=<from §1>
 PAPERLESS_TOKEN=<API token of Paperless user "provisioner">
 ```
 
@@ -286,17 +292,27 @@ docker compose exec webserver python3 manage.py shell -c \
 
 ## 6. Paperless-ngx configuration
 
-### 6.1 OIDC (`docker-compose.env`, masked)
+### 6.1 OIDC
+Non-secret settings in `docker-compose.env` (see [`docker-compose.env.example`](docker-compose.env.example)):
 ```env
 PAPERLESS_APPS=allauth.socialaccount.providers.openid_connect
-PAPERLESS_SOCIALACCOUNT_PROVIDERS={"openid_connect":{"SCOPE":["openid","profile","email"],"APPS":[{"provider_id":"onewelcome","name":"OneWelcome","client_id":"<PAPERLESS_CLIENT_ID>","secret":"<PAPERLESS_CLIENT_SECRET>","settings":{"server_url":"https://<tenant>.gw.<oip-region-domain>/oauth"}}]}}
 PAPERLESS_SOCIAL_AUTO_SIGNUP=true
 PAPERLESS_SOCIALACCOUNT_ALLOW_SIGNUPS=true
 PAPERLESS_ACCOUNT_EMAIL_VERIFICATION=none
 PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS=true
 PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM=groups
-#PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS=Staff   # removed: new users must not land in an internal group
+#PAPERLESS_SOCIAL_ACCOUNT_DEFAULT_GROUPS=   # do not use an internal group; groups come from the claim
 ```
+The provider JSON is set in `docker-compose.yml` (webserver `environment:`) so the client secret is interpolated from `.env` instead of being stored in `docker-compose.env`:
+```yaml
+      PAPERLESS_SOCIALACCOUNT_PROVIDERS: >-
+        {"openid_connect":{"SCOPE":["openid","profile","email"],"OAUTH_PKCE_ENABLED":true,
+        "APPS":[{"provider_id":"onewelcome","name":"OneWelcome",
+        "client_id":"${PAPERLESS_CLIENT_ID}","secret":"${PAPERLESS_OIDC_CLIENT_SECRET}",
+        "settings":{"server_url":"https://<tenant>.gw.<oip-region-domain>/oauth/.well-known/openid-configuration",
+        "token_auth_method":"client_secret_basic"}}]}}
+```
+> `token_auth_method: client_secret_basic` matches the Access client's *Client secret (basic)* setting; without it django-allauth may use `client_secret_post`.
 
 ### 6.2 Template org space (first org created manually, others auto-provisioned)
 - **Group `Despair`** — all permissions on Document, Tag, Correspondent, DocumentType, StoragePath, SavedView, UISettings, Note, CustomField. **No** User/Group/Workflow/Admin rights; never superuser.
@@ -343,7 +359,8 @@ PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS_CLAIM=groups
 
 ## 9. Open items / hardening
 
-- [ ] Rotate `HOOK_SECRET` (never paste it in chats/docs) and switch Access web hook auth to Basic/JWT.
+- [ ] Rotate `HOOK_SECRET` and the Paperless OIDC client secret whenever they may have been exposed (never paste them in chats/docs).
+- [ ] Switch the Access web hook authentication from *No Authentication* to Basic/JWT.
 - [ ] `DEBUG: "0"` once stable.
 - [ ] Optional self-healing `ensure_orgs` (re-check group existence every login).
 - [ ] autoshare: page through results if > 50 uploads arrive within one tick.
