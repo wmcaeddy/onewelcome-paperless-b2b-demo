@@ -36,6 +36,91 @@ Step-by-step record of how the OneWelcome (OIP) B2B demo with Paperless-ngx was 
 
 ---
 
+
+## Architecture — how the pieces connect
+
+### Components
+
+```mermaid
+flowchart LR
+  U([Partner user<br/>e.g. Alice @ Wonderland])
+
+  subgraph OIP["OneWelcome (tenant)"]
+    DM["DMv2<br/>organizations · users · memberships"]
+    ACC["Access (OIDC server)<br/>client: Paperless-ngx<br/>User Details Customization hook"]
+    TUL["Tulip login<br/>(IdP)"]
+    SVC["Service client<br/>client credentials<br/>correlation:user/org:get"]
+  end
+
+  subgraph HOST["Docker host"]
+    CF["Reverse proxy / tunnel<br/>https://hook.&lt;your-domain&gt;"]
+    HOOK["claims-hook<br/>app.py · provision.py · autoshare.py"]
+    PL["Paperless-ngx<br/>OIDC login + group sync"]
+    DATA[("claims-hook-data<br/>groups cache · autoshare state")]
+  end
+
+  U -- browser --> PL
+  PL -- "OIDC login" --> ACC
+  ACC -- "authenticate" --> TUL
+  ACC -- "POST user + claims<br/>(each login)" --> CF --> HOOK
+  HOOK -. "token" .-> SVC
+  HOOK -- "GET /users/{id}/organizations" --> DM
+  HOOK -- "REST API (provisioner token)<br/>create org space · share uploads" --> PL
+  HOOK --- DATA
+```
+
+| From → To | What happens | Configured in |
+|---|---|---|
+| Paperless → Access | Standard OIDC login (authorization code) | Paperless `PAPERLESS_SOCIALACCOUNT_PROVIDERS` ↔ Access web client *Paperless-ngx* (§1, §6.1) |
+| Access → Tulip | Access delegates authentication to the Tulip IdP | Web client → *Identity provider* (§1) |
+| Access → claims-hook | At every login (token + userinfo) Access POSTs the user and claims; the hook may add claims | Access *Web Hooks* + client OIDC config (§4) |
+| claims-hook → DMv2 | Reads the user's organizations (enabled, membership valid today) | Service client (§3), `DM_BASE`, `OIP_TOKEN_URL` |
+| claims-hook → Paperless API | Creates the org's group/tag/storage path/workflow if missing; shares new uploads with the uploader's org | `PAPERLESS_TOKEN`, `PAPERLESS_API` (§5) |
+| Paperless | Syncs the user's groups from the `groups` claim | `PAPERLESS_SOCIAL_ACCOUNT_SYNC_GROUPS=true` (§6.1) |
+
+### Login sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User (Alice)
+    participant PL as Paperless-ngx
+    participant ACC as OneWelcome Access
+    participant TUL as Tulip login
+    participant HOOK as claims-hook
+    participant DM as DMv2
+
+    U->>PL: open Paperless
+    PL->>ACC: OIDC redirect
+    ACC->>TUL: authenticate
+    TUL-->>ACC: user id
+    ACC->>HOOK: POST {user.id, client.id, claims}
+    HOOK->>DM: GET /users/{id}/organizations
+    DM-->>HOOK: ["Wonderland"]
+    HOOK->>PL: create Wonderland space if missing
+    HOOK-->>ACC: claims + groups:["Wonderland"]
+    ACC-->>PL: ID token / userinfo with groups
+    PL-->>U: dashboard — Wonderland documents only
+```
+
+### Worked example — onboarding a new partner "Wonderland"
+
+| Step | Who / where | Result |
+|---|---|---|
+| 1 | Admin, DMv2: create org **Wonderland**, attach access role **Paperless-User** | Org exists in OneWelcome |
+| 2 | Admin, DMv2: invite **Alice** into Wonderland | Alice sets her password (Tulip) |
+| 3 | Alice opens Paperless and signs in | Access calls the hook |
+| 4 | claims-hook asks DMv2 | `GROUPS <alice-id>: ['Wonderland']` |
+| 5 | claims-hook → Paperless API (first Wonderland login only) | `PROVISION group/tag/storage path/workflow 'Wonderland' created` |
+| 6 | Paperless group sync | Alice ∈ group *Wonderland* |
+| 7 | Alice uploads `Alice_in_Wonderland.pdf` | within ~10 s: `AUTOSHARE doc … -> ['Wonderland']` |
+| 8 | Bob (Wonderland) / Robinson (Despair) log in | Bob sees the file; Robinson does not |
+| 9 | Admin ends Alice's membership in DMv2 | next login: `groups: []` → access removed |
+
+No Paperless admin action is needed for steps 3–9.
+
+---
+
 ## 1. OneWelcome — Paperless OIDC client
 
 Access Admin → **Configuration → Web clients** → client **Paperless-ngx**.
