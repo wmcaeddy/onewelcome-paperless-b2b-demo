@@ -314,6 +314,19 @@ The provider JSON is set in `docker-compose.yml` (webserver `environment:`) so t
 ```
 > `token_auth_method: client_secret_basic` matches the Access client's *Client secret (basic)* setting; without it django-allauth may use `client_secret_post`.
 
+### 6.1a Single sign-out (Logout ends the OneWelcome session too)
+By default Paperless' **Logout** only ends the Paperless session; the OneWelcome session stays active, so the next *Partner login* signs straight back in.
+Send every logout through the OneWelcome `end_session_endpoint` (from `/.well-known/openid-configuration` → `https://<tenant>.gw.<oip-region-domain>/oauth/v1/logout`), which then returns to Paperless. Add to the webserver `environment:` in `docker-compose.yml`:
+```yaml
+      PAPERLESS_LOGOUT_REDIRECT_URL: "https://<tenant>.gw.<oip-region-domain>/oauth/v1/logout?client_id=${PAPERLESS_CLIENT_ID}&post_logout_redirect_uri=https%3A%2F%2Fpaperless.<your-domain>%2F"
+```
+Apply with `docker compose up -d webserver`.
+
+- `post_logout_redirect_uri` must exactly match the Access client's **Post logout redirect** (§1, `https://paperless.<your-domain>/`).
+- Paperless doesn't send `id_token_hint`, so the client is identified by `client_id`.
+- The setting applies to **all** logouts, including local accounts such as `admin`: they pass briefly through OneWelcome (no session to end) and land back on the Paperless sign-in page.
+- Single sign-out also ends the OneWelcome session for any other app using it in the same browser.
+
 ### 6.2 Template org space (first org created manually, others auto-provisioned)
 - **Group `Despair`** — all permissions on Document, Tag, Correspondent, DocumentType, StoragePath, SavedView, UISettings, Note, CustomField. **No** User/Group/Workflow/Admin rights; never superuser.
 - **Tag `Despair`** — matching *None*; edit permission: group Despair.
@@ -341,6 +354,8 @@ The provider JSON is set in `docker-compose.yml` (webserver `environment:`) so t
 | Upload as org user | `AUTOSHARE doc <id> '<title>' -> ['<Org>']` within ~10 s; other orgs can't see it |
 | Remove user from group in Paperless, log in again | Group restored (DMv2 is source of truth) |
 | End membership in DMv2 (end date in past) | `groups: []` → group removed at next login |
+| Partner login → Logout → Partner login | OneWelcome asks for credentials again (single sign-out) |
+| Local `admin` → Logout | Brief redirect via OneWelcome, back on the Paperless sign-in page |
 | Access Admin → Activity | No `USER DETAILS CUSTOMIZATION WEB HOOK FAILED` events |
 
 ---

@@ -57,6 +57,8 @@ services:
         "client_id":"${PAPERLESS_CLIENT_ID}","secret":"${PAPERLESS_OIDC_CLIENT_SECRET}",
         "settings":{"server_url":"https://<tenant>.gw.<region-domain>/oauth/.well-known/openid-configuration",
         "token_auth_method":"client_secret_basic"}}]}}
+      # Single sign-out: every Paperless logout also ends the OneWelcome session, then returns here
+      PAPERLESS_LOGOUT_REDIRECT_URL: "https://<tenant>.gw.<region-domain>/oauth/v1/logout?client_id=${PAPERLESS_CLIENT_ID}&post_logout_redirect_uri=https%3A%2F%2Fpaperless.<your-domain>%2F"
 
   claims-hook:
     image: python:3.12-alpine
